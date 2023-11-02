@@ -73,6 +73,9 @@ import MqttCocoaAsyncSocket
     ///
     func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: Error?)
     
+    ///
+    func mqtt(_ mqtt: CocoaMQTT, shouldProceedWithPubAck message: CocoaMQTTMessage, id: UInt16) -> Bool
+
     /// Manually validate SSL/TLS server certificate.
     ///
     /// This method will be called if enable  `allowUntrustCACertificate`
@@ -291,7 +294,8 @@ public class CocoaMQTT: NSObject, CocoaMQTTClient {
     public var didReceiveTrust: (CocoaMQTT, SecTrust, @escaping (Bool) -> Swift.Void) -> Void = { _, _, _ in }
     public var didCompletePublish: (CocoaMQTT, UInt16) -> Void = { _, _ in }
     public var didChangeState: (CocoaMQTT, CocoaMQTTConnState) -> Void = { _, _ in }
-    
+    public var shouldProceedWithPubAck: (CocoaMQTT, CocoaMQTTMessage, UInt16) -> Bool = { _, _, _ in return true }
+
     /// Initial client object
     ///
     /// - Parameters:
@@ -697,6 +701,25 @@ extension CocoaMQTT: CocoaMQTTReaderDelegate {
         message.duplicated = publish.dup
         
         printInfo("Received message: \(message)")
+
+        var shouldProceed = true
+
+        // Check if delegate method is implemented and execute it
+        if let delegateResponse = delegate?.mqtt(self, shouldProceedWithPubAck: message, id: publish.msgid) {
+            shouldProceed = delegateResponse
+        }
+        // If delegate method already executed and returned false, return
+        guard shouldProceed else {
+            return
+        }
+
+        // Check the closure
+        shouldProceed = shouldProceedWithPubAck(self, message, publish.msgid)
+
+        guard shouldProceed else {
+            return
+        }
+
         delegate?.mqtt(self, didReceiveMessage: message, id: publish.msgid)
         didReceiveMessage(self, message, publish.msgid)
         

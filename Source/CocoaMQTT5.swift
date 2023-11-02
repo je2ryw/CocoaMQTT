@@ -66,6 +66,9 @@ import MqttCocoaAsyncSocket
     ///
     func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?)
     
+    ///
+    func mqtt5(_ mqtt5: CocoaMQTT5, shouldProceedWithPubAck message: CocoaMQTT5Message, id: UInt16, publishData: MqttDecodePublish?) -> Int8
+
     /// Manually validate SSL/TLS server certificate.
     ///
     /// This method will be called if enable  `allowUntrustCACertificate`
@@ -297,6 +300,7 @@ public class CocoaMQTT5: NSObject, CocoaMQTT5Client {
     public var didReceiveTrust: (CocoaMQTT5, SecTrust, @escaping (Bool) -> Swift.Void) -> Void = { _, _, _ in }
     public var didCompletePublish: (CocoaMQTT5, UInt16, MqttDecodePubComp?) -> Void = { _, _, _ in }
     public var didChangeState: (CocoaMQTT5, CocoaMQTTConnState) -> Void = { _, _ in }
+    public var shouldProceedWithPubAck: (CocoaMQTT5, CocoaMQTT5Message, UInt16, MqttDecodePublish?) -> Int8 = { _, _, _, _ in return 0 }
 
     /// Initial client object
     ///
@@ -357,14 +361,14 @@ public class CocoaMQTT5: NSObject, CocoaMQTT5Client {
         return _msgid
     }
 
-    fileprivate func puback(_ type: FrameType, msgid: UInt16) {
+    fileprivate func puback(_ type: FrameType, msgid: UInt16, reasonCode: UInt8? = nil) {
         switch type {
         case .puback:
-            send(FramePubAck(msgid: msgid, reasonCode: CocoaMQTTPUBACKReasonCode.success))
+            send(FramePubAck(msgid: msgid, reasonCode: CocoaMQTTPUBACKReasonCode(rawValue: reasonCode ?? 0) ?? CocoaMQTTPUBACKReasonCode.success))
         case .pubrec:
-            send(FramePubRec(msgid: msgid, reasonCode: CocoaMQTTPUBRECReasonCode.success))
+            send(FramePubRec(msgid: msgid, reasonCode: CocoaMQTTPUBRECReasonCode(rawValue: reasonCode ?? 0) ?? CocoaMQTTPUBRECReasonCode.success))
         case .pubcomp:
-            send(FramePubComp(msgid: msgid, reasonCode: CocoaMQTTPUBCOMPReasonCode.success))
+            send(FramePubComp(msgid: msgid, reasonCode: CocoaMQTTPUBCOMPReasonCode(rawValue: reasonCode ?? 0) ?? CocoaMQTTPUBCOMPReasonCode.success))
         default: return
         }
     }
@@ -765,13 +769,36 @@ extension CocoaMQTT5: CocoaMQTTReaderDelegate {
         message.duplicated = publish.dup
 
         printInfo("Received message: \(message)")
-        delegate?.mqtt5(self, didReceiveMessage: message, id: publish.msgid,  publishData: publish.publishRecProperties ?? nil)
-        didReceiveMessage(self, message, publish.msgid, publish.publishRecProperties ?? nil)
+
+        var shouldProceedResponse: Int8 = 0
+
+        // Check if delegate method is implemented and execute it
+        if let delegateResponse = delegate?.mqtt5(self, shouldProceedWithPubAck: message, id: publish.msgid,  publishData: publish.publishRecProperties ?? nil) {
+            shouldProceedResponse = delegateResponse
+        }
+
+        // Only proceed with the closure method if shouldProceedResponse is still 0
+        if shouldProceedResponse == 0 {
+            // Check the closure
+            shouldProceedResponse = shouldProceedWithPubAck(self, message, publish.msgid, publish.publishRecProperties ?? nil)
+        }
+
+        guard shouldProceedResponse < 0 else {
+            return
+        }
+
+        let reasonCode = UInt8(shouldProceedResponse)
+
+        // only proceed with following delegate method and closure if we will ack the message with a success code
+        if reasonCode == 0 {
+            delegate?.mqtt5(self, didReceiveMessage: message, id: publish.msgid,  publishData: publish.publishRecProperties ?? nil)
+            didReceiveMessage(self, message, publish.msgid, publish.publishRecProperties ?? nil)
+        }
 
         if message.qos == .qos1 {
-            puback(FrameType.puback, msgid: publish.msgid)
+            puback(FrameType.puback, msgid: publish.msgid, reasonCode: reasonCode)
         } else if message.qos == .qos2 {
-            puback(FrameType.pubrec, msgid: publish.msgid)
+            puback(FrameType.pubrec, msgid: publish.msgid, reasonCode: reasonCode)
         }
     }
 
